@@ -1,0 +1,10 @@
+# Python / virtual environment
+.venv/
+__pycache__/
+*.pyc
+
+# Personal data: weights, water and medication records of every user. Never commit this.
+data/
+
+# Editor settings (PyCharm)
+.idea/
