@@ -6,10 +6,16 @@ from decimal import Decimal
 from pathlib import Path
 
 from health_tracker.storage import (
+    DEFAULT_GLUCOSE_TARGET,
     DEFAULT_WATER_GOAL,
+    BloodPressure,
+    GlucoseReading,
     HealthStore,
     Medication,
+    blood_pressure_category,
     format_change,
+    glucose_status,
+    in_last_days,
     format_weekdays,
     parse_time,
     parse_times,
@@ -46,6 +52,46 @@ class ParsingTest(unittest.TestCase):
         self.assertEqual(format_change(Decimal("0")), "±0.0 kg")
         self.assertEqual(format_weekdays(list(range(7))), "Every day")
         self.assertEqual(format_weekdays([4, 0, 2]), "Mon, Wed, Fri")
+
+
+class ReadingsTest(unittest.TestCase):
+    def test_blood_pressure_categories(self):
+        cases = {
+            (115, 75): "Normal",
+            (125, 78): "Elevated",
+            (132, 78): "High, stage 1",
+            (118, 85): "High, stage 1",
+            (145, 85): "High, stage 2",
+            (125, 92): "High, stage 2",
+            (185, 100): "Hypertensive crisis",
+            (150, 125): "Hypertensive crisis",
+            (85, 55): "Low",
+        }
+        for (systolic, diastolic), category in cases.items():
+            self.assertEqual(blood_pressure_category(systolic, diastolic), category, (systolic, diastolic))
+
+    def test_blood_pressure_validation(self):
+        reading = BloodPressure(MON, "7:30", " 128 ", "82", "")
+        self.assertEqual((reading.time, reading.text, reading.pulse), ("07:30", "128/82", None))
+        self.assertEqual(BloodPressure(MON, "07:30", 120, 80, "64").pulse, 64)
+        for systolic, diastolic, pulse in ((80, 90, None), ("12o", 80, None), (400, 80, None), (120, 80, 5)):
+            with self.assertRaises(ValueError, msg=(systolic, diastolic, pulse)):
+                BloodPressure(MON, "07:30", systolic, diastolic, pulse)
+
+    def test_glucose(self):
+        reading = GlucoseReading(MON, "7", "95", "fasting")
+        self.assertEqual((reading.time, reading.mg_dl, reading.context), ("07:00", 95, "Fasting"))
+        with self.assertRaises(ValueError):
+            GlucoseReading(MON, "07:00", 95, "lunch")
+        with self.assertRaises(ValueError):
+            GlucoseReading(MON, "07:00", "5.4")  # mmol/L isn't accepted; mg/dL only
+        self.assertEqual([glucose_status(v, DEFAULT_GLUCOSE_TARGET) for v in (69, 70, 180, 181)],
+                         ["Low", "In range", "In range", "High"])
+
+    def test_in_last_days(self):
+        readings = [GlucoseReading(MON + timedelta(days=i), "08:00", 100) for i in range(-8, 2)]
+        self.assertEqual([r.date for r in in_last_days(readings, TUE, 7)],
+                         [TUE - timedelta(days=i) for i in range(6, -1, -1)])
 
 
 class StoreTest(unittest.TestCase):
@@ -112,6 +158,43 @@ class StoreTest(unittest.TestCase):
         for bad in (0, 31):
             with self.assertRaises(ValueError):
                 self.store.set_water_goal(bad)
+
+    # --- blood pressure & glucose ---
+
+    def test_blood_pressure_readings(self):
+        morning = self.store.add_blood_pressure(BloodPressure(MON, "08:00", 135, 85, 70, "left arm"))
+        self.store.add_blood_pressure(BloodPressure(MON, "21:00", 122, 79))
+        self.store.add_blood_pressure(BloodPressure(MON, "07:00", 118, 76))
+        data = self.store.load()
+        self.assertEqual([r.time for r in data.blood_pressure_on(MON)], ["07:00", "08:00", "21:00"])
+        self.assertEqual(data.blood_pressure_on(TUE), [])
+        self.assertEqual(data.summary(MON).blood_pressure.text, "122/79")  # the day's last reading
+        self.assertEqual(data.blood_pressure_on(MON)[1], morning)  # survives saving and loading
+        self.assertEqual(data.blood_pressure_on(MON)[1].when, datetime(2026, 10, 12, 8, 0))
+
+        self.assertTrue(self.store.delete_blood_pressure(morning.id))
+        self.assertFalse(self.store.delete_blood_pressure(morning.id))
+        self.assertEqual(len(self.store.load().blood_pressure), 2)
+        with self.assertRaises(ValueError):
+            self.store.add_blood_pressure(BloodPressure(date.today() + timedelta(days=1), "08:00", 120, 80))
+
+    def test_glucose_readings_and_target(self):
+        fasting = self.store.add_glucose(GlucoseReading(TUE, "07:00", 110, "Fasting"))
+        self.store.add_glucose(GlucoseReading(TUE, "14:00", 190, "After meal", "pasta"))
+        data = self.store.load()
+        self.assertEqual(data.glucose_target, DEFAULT_GLUCOSE_TARGET)
+        self.assertEqual([(r.mg_dl, r.context, r.notes) for r in data.glucose_on(TUE)],
+                         [(110, "Fasting", ""), (190, "After meal", "pasta")])
+        self.assertEqual(data.summary(TUE).glucose.mg_dl, 190)
+        self.assertIsNone(data.summary(MON).glucose)
+
+        self.store.set_glucose_target(80, 200)
+        self.assertEqual(self.store.load().glucose_target, (80, 200))
+        for low, high in ((150, 120), (10, 180), (70, 900)):
+            with self.assertRaises(ValueError, msg=(low, high)):
+                self.store.set_glucose_target(low, high)
+        self.assertTrue(self.store.delete_glucose(fasting.id))
+        self.assertEqual([r.mg_dl for r in self.store.load().glucose], [190])
 
     # --- medications ---
 

@@ -1,6 +1,7 @@
 # 🩺 Health Tracker
 
-A personal health app for Windows that tracks **weight, water and medication** day by day.
+A personal health app for Windows that tracks **weight, water, medication, blood pressure and
+blood sugar (glucose)** day by day.
 Several people can use it on the same computer, each with their own data — and everything stays
 on your computer.
 
@@ -14,8 +15,16 @@ on your computer.
   a start date and an optional end date for courses like antibiotics. Each day shows a checklist of
   the doses due; tick each one once you've taken it. Doses can't be ticked for days that haven't
   happened yet, and the app reminds you on opening about today's doses that are due but not ticked.
+- **Blood pressure** — log each reading (systolic/diastolic in mmHg, optional pulse and notes) as
+  many times a day as you measure. Each reading shows its category from the American Heart
+  Association guide (normal, elevated, high stage 1/2, crisis, plus low), with 7- and 30-day
+  averages and a chart of both numbers over the last 90 days.
+- **Glucose (diabetes)** — log blood sugar readings in mg/dL with when they were taken (fasting,
+  before or after a meal, bedtime). Your own target range (70–180 by default) marks readings as
+  low, in range or high, gives the share in range over the last 7 days, and is shaded on the chart.
 - **Any day** — ◀ ▶, the calendar or Alt+Left / Alt+Right move between days, so you can fill in a
-  day you forgot; the header shows that day's weight, water and medication at a glance.
+  day you forgot; the header shows that day's weight, water, medication, blood pressure and glucose
+  at a glance.
 - **Several users** — a start screen to pick who's using the app; each user has separate data and
   backups. Deleted users are moved aside, never erased.
 - **Safe storage** — atomic saves (a crash never leaves a half-written file) and an automatic daily
@@ -28,11 +37,12 @@ The user switching, storage and widgets follow the same design as the Budget Tra
 
 ```
 health_tracker/
-  storage.py      data model (weights, water, medications, taken doses) and the JSON store
+  storage.py      data model (weights, water, medications, blood pressure, glucose) and the JSON store
   users.py        users, each with their own data folder
   paths.py        where data lives (from source, portable, or installed)
   gui/            the window: start screen, header, dialogs, widgets, chart
-  gui/tabs/       one module per tab (medications, water, weight)
+  gui/tabs/       one module per tab (medications, water, weight, blood pressure, glucose);
+                  readings.py is the shared layout of the blood pressure and glucose tabs
 tests/            unit tests (python -m unittest)
 ```
 
@@ -55,7 +65,8 @@ variable overrides it). Inside it:
 
 ```
 users.json                  the list of users and who was used last
-users/<id>/health.json      that user's weights, water, medications and taken doses
+users/<id>/health.json      that user's weights, water, medications, taken doses, blood pressure and
+                            glucose readings
 users/<id>/backups/         automatic daily backups (last 30 kept)
 users/_deleted/             data of deleted users (moved here, never erased)
 logs/errors.log             details of unexpected errors

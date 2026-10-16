@@ -16,10 +16,10 @@ from pathlib import Path
 from tkinter import messagebox, ttk
 
 from .. import APP_NAME
-from ..storage import HealthData, HealthStore, format_change, format_weight
+from ..storage import HealthData, HealthStore, format_change, format_weight, glucose_status
 from ..users import User
 from .icons import Icons
-from .tabs import MedicationsTab, WaterTab, WeightTab
+from .tabs import BloodPressureTab, GlucoseTab, MedicationsTab, WaterTab, WeightTab
 from .widgets import DateField, day_name, relative_day, setup_style
 
 
@@ -65,7 +65,9 @@ class HealthApp(ttk.Frame):
         self.medications_tab = MedicationsTab(self)
         self.water_tab = WaterTab(self)
         self.weight_tab = WeightTab(self)
-        self.tabs = [self.medications_tab, self.water_tab, self.weight_tab]
+        self.blood_pressure_tab = BloodPressureTab(self)
+        self.glucose_tab = GlucoseTab(self)
+        self.tabs = [self.medications_tab, self.water_tab, self.weight_tab, self.blood_pressure_tab, self.glucose_tab]
         ttk.Label(self, textvariable=self.status_var, style="Muted.TLabel").grid(
             row=2, column=0, sticky="w", padx=12, pady=(0, 6))
         self.refresh()
@@ -130,8 +132,9 @@ class HealthApp(ttk.Frame):
         cards = ttk.Frame(header)
         cards.grid(row=0, column=2, rowspan=2, sticky="e")
         self.cards = {}
-        for i, (key, title) in enumerate((("weight", "Weight"), ("water", "Water"), ("medication", "Medication"))):
-            card = ttk.Frame(cards, padding=(22, 0, 0, 0))
+        for i, (key, title) in enumerate((("weight", "Weight"), ("water", "Water"), ("medication", "Medication"),
+                                          ("blood_pressure", "Blood pressure"), ("glucose", "Glucose"))):
+            card = ttk.Frame(cards, padding=(20, 0, 0, 0))
             card.grid(row=0, column=i)
             ttk.Label(card, text=title, style="CardTitle.TLabel").pack(anchor="e")
             value, note = tk.StringVar(), tk.StringVar()
@@ -140,11 +143,13 @@ class HealthApp(ttk.Frame):
             ttk.Label(card, textvariable=note, style="Muted.TLabel").pack(anchor="e")
             self.cards[key] = (value, note, label)
 
-    def _set_card(self, key: str, value: str, note: str, good: bool = False) -> None:
+    def _set_card(self, key: str, value: str, note: str, tone: str = "") -> None:
+        """tone: "good" (green), "warning" (orange) or "" (plain)."""
         value_var, note_var, label = self.cards[key]
         value_var.set(value)
         note_var.set(note)
-        label.configure(style="Good.CardValue.TLabel" if good else "CardValue.TLabel")
+        label.configure(style={"good": "Good.CardValue.TLabel", "warning": "Warning.CardValue.TLabel"}.get(
+            tone, "CardValue.TLabel"))
 
     # ---------- selected day ----------
 
@@ -207,12 +212,24 @@ class HealthApp(ttk.Frame):
                            f"{format_change(s.weight_change)} vs last entry" if s.weight_change is not None else "first entry")
         else:
             self._set_card("weight", "—", "not entered")
-        self._set_card("water", f"{s.water} / {s.water_goal}", "times", good=s.water >= s.water_goal)
+        self._set_card("water", f"{s.water} / {s.water_goal}", "times", "good" if s.water >= s.water_goal else "")
         if s.doses_due:
             self._set_card("medication", f"{s.doses_taken} / {s.doses_due}", "doses taken",
-                           good=s.doses_taken == s.doses_due)
+                           "good" if s.doses_taken == s.doses_due else "")
         else:
             self._set_card("medication", "—", "nothing to take")
+        if s.blood_pressure:
+            category = s.blood_pressure.category
+            self._set_card("blood_pressure", s.blood_pressure.text, category.lower(),
+                           "good" if category == "Normal" else "warning")
+        else:
+            self._set_card("blood_pressure", "—", "no reading")
+        if s.glucose:
+            status = glucose_status(s.glucose.mg_dl, s.glucose_target)
+            self._set_card("glucose", str(s.glucose.mg_dl), f"mg/dL · {status.lower()}",
+                           "good" if status == "In range" else "warning")
+        else:
+            self._set_card("glucose", "—", "no reading")
 
         for tab in self.tabs:
             tab.redraw(self.data, day)

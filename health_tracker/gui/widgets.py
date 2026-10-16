@@ -24,6 +24,12 @@ def day_name(day: date) -> str:
     return text if day.year == date.today().year else f"{text} {day.year}"
 
 
+def short_day(day: date) -> str:
+    """'Thu 15 Oct' (with the year too when it isn't this year)."""
+    text = f"{calendar.day_abbr[day.weekday()]} {day.day} {calendar.month_abbr[day.month]}"
+    return text if day.year == date.today().year else f"{text} {day.year}"
+
+
 def relative_day(day: date) -> str:
     """'today', 'yesterday', 'tomorrow', '3 days ago', 'in 2 days'."""
     diff = (day - date.today()).days
@@ -308,11 +314,19 @@ def setup_style(widget: tk.Misc, icons: Icons) -> None:
     style.configure("CardTitle.TLabel", foreground="#6b7280", font=("Segoe UI", 9))
     style.configure("CardValue.TLabel", font=("Segoe UI", 14, "bold"))
     style.configure("Good.CardValue.TLabel", foreground=GOOD, font=("Segoe UI", 14, "bold"))
+    style.configure("Warning.CardValue.TLabel", foreground=WARNING, font=("Segoe UI", 14, "bold"))
     style.configure("UserName.TLabel", font=("Segoe UI", 11, "bold"))
     style.configure("Dose.TCheckbutton", font=("Segoe UI", 11))
     style.configure("Link.TButton", padding=(6, 0))
     style.configure("Icon.TButton", padding=2)
     style.configure("TNotebook.Tab", padding=(12, 4))
+
+
+def wrapping_label(parent: tk.Misc, text: str, style: str = "Muted.TLabel") -> ttk.Label:
+    """A label whose text wraps to the width it's given (pack it with fill="x")."""
+    label = ttk.Label(parent, text=text, style=style)
+    label.bind("<Configure>", lambda e: label.configure(wraplength=max(e.width, 50)))
+    return label
 
 
 def regrab(widget: tk.Misc) -> None:

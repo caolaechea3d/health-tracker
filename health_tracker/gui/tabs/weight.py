@@ -7,7 +7,7 @@ from datetime import date, timedelta
 from tkinter import messagebox, ttk
 
 from ...storage import HealthData, WeightEntry, format_change, format_weight
-from ..chart import LineChart
+from ..chart import LineChart, Series
 from ..widgets import day_name
 from .base import WEIGHT_COLOR, Tab
 
@@ -85,7 +85,7 @@ class WeightTab(Tab):
         ttk.Button(below, text="Delete selected", command=self.delete_selected).pack(side="left")
         ttk.Label(below, text="Double-click a row to open that day.", style="Muted.TLabel").pack(side="left", padx=(10, 0))
 
-        self.chart = LineChart(self, WEIGHT_COLOR, unit="kg", scale=self.icons.scale)
+        self.chart = LineChart(self, unit="kg", scale=self.icons.scale)
         self.chart.grid(row=0, column=1, rowspan=5, sticky="nsew")
 
     # ---------- drawing ----------
@@ -133,8 +133,8 @@ class WeightTab(Tab):
 
         end = max(day, weights[-1].date) if weights else day
         shown = [(w.date, float(w.kg)) for w in weights if end - timedelta(days=CHART_DAYS) <= w.date <= end]
-        self.chart.set_points(shown, f"Weight · last {CHART_DAYS} days", highlight=day,
-                              empty_text="Save your weight on at least two days to see a chart here.")
+        self.chart.set_series([Series("Weight", WEIGHT_COLOR, shown)], f"Weight · last {CHART_DAYS} days",
+                              highlight=day, empty_text="Save your weight on at least two days to see a chart here.")
 
     # ---------- actions ----------
 

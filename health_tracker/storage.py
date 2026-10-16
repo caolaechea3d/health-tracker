@@ -4,10 +4,12 @@ Each user's data lives in one JSON file (users/<id>/health.json inside the data 
 paths.py) next to a backups/ folder holding an automatic copy of it once per day (last 30 kept).
 
 The file holds:
-  weights      one weight per day, in kg
-  water        one entry per time you drank water (date + time of day)
-  medications  what to take: dose, times of day, weekdays, and an optional start/end date
-  taken        which scheduled doses were ticked as taken, and when
+  weights         one weight per day, in kg
+  water           one entry per time you drank water (date + time of day)
+  medications     what to take: dose, times of day, weekdays, and an optional start/end date
+  taken           which scheduled doses were ticked as taken, and when
+  blood_pressure  readings (systolic/diastolic in mmHg, optional pulse) with date and time
+  glucose         blood sugar readings in mg/dL with date, time and when they were taken (fasting…)
 """
 
 from __future__ import annotations
@@ -31,6 +33,11 @@ KG_STEP = Decimal("0.1")
 MIN_WEIGHT, MAX_WEIGHT = Decimal("1"), Decimal("500")
 WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
 EVERY_DAY = list(range(7))  # weekday numbers, 0 = Monday
+
+GLUCOSE_CONTEXTS = ("Fasting", "Before meal", "After meal", "Bedtime", "Other")
+# The usual "time in range" target for people with diabetes; each user can set their own.
+DEFAULT_GLUCOSE_TARGET = (70, 180)  # mg/dL
+GLUCOSE_TARGET_LIMITS = (40, 400)
 
 
 # ---------- parsing & formatting ----------
@@ -83,6 +90,43 @@ def parse_times(value: str | list[str]) -> list[str]:
     if not times:
         raise ValueError("Give at least one time of day, e.g. 08:00")
     return times
+
+
+def parse_whole(value: str | int, label: str, low: int, high: int) -> int:
+    """A whole number between `low` and `high`, e.g. a blood pressure or glucose value."""
+    try:
+        number = int(str(value).strip())
+    except ValueError:
+        raise ValueError(f"Invalid {label}: {value!r}; use a whole number") from None
+    if not low <= number <= high:
+        raise ValueError(f"{label[0].upper()}{label[1:]} must be between {low} and {high}")
+    return number
+
+
+def blood_pressure_category(systolic: int, diastolic: int) -> str:
+    """Category of a reading, following the American Heart Association guide (plus 'Low' below 90/60)."""
+    if systolic > 180 or diastolic > 120:
+        return "Hypertensive crisis"
+    if systolic >= 140 or diastolic >= 90:
+        return "High, stage 2"
+    if systolic >= 130 or diastolic >= 80:
+        return "High, stage 1"
+    if systolic < 90 or diastolic < 60:
+        return "Low"
+    if systolic >= 120:
+        return "Elevated"
+    return "Normal"
+
+
+def glucose_status(mg_dl: int, target: tuple[int, int]) -> str:
+    low, high = target
+    return "Low" if mg_dl < low else "High" if mg_dl > high else "In range"
+
+
+def in_last_days(records: list, last: date, days: int) -> list:
+    """The records dated within the `days` days ending at `last` (both included)."""
+    first = last - timedelta(days=days - 1)
+    return [r for r in records if first <= r.date <= last]
 
 
 def format_weight(kg: Decimal | None) -> str:
@@ -154,6 +198,83 @@ class WaterEntry:
     @classmethod
     def from_dict(cls, d: dict) -> WaterEntry:
         return cls(parse_date(d["date"]), parse_time(d["time"]), d["id"])
+
+
+class _Reading:
+    """Something measured at a time of day (blood pressure, glucose)."""
+
+    date: date
+    time: str  # HH:MM
+
+    @property
+    def when(self) -> datetime:
+        return datetime.fromisoformat(f"{self.date.isoformat()}T{self.time}")
+
+
+@dataclass
+class BloodPressure(_Reading):
+    date: date
+    time: str
+    systolic: int  # mmHg, the upper number
+    diastolic: int  # mmHg, the lower number
+    pulse: int | None = None  # beats per minute
+    notes: str = ""
+    id: str = field(default_factory=_new_id)
+
+    def __post_init__(self) -> None:
+        self.time = parse_time(self.time)
+        self.systolic = parse_whole(self.systolic, "systolic (upper) pressure", 50, 300)
+        self.diastolic = parse_whole(self.diastolic, "diastolic (lower) pressure", 20, 200)
+        if self.diastolic >= self.systolic:
+            raise ValueError("The systolic (upper) number must be higher than the diastolic (lower) one")
+        empty = self.pulse is None or str(self.pulse).strip() == ""
+        self.pulse = None if empty else parse_whole(self.pulse, "pulse", 20, 250)
+        self.notes = self.notes.strip()
+
+    @property
+    def text(self) -> str:
+        return f"{self.systolic}/{self.diastolic}"
+
+    @property
+    def category(self) -> str:
+        return blood_pressure_category(self.systolic, self.diastolic)
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "date": self.date.isoformat(), "time": self.time, "systolic": self.systolic,
+                "diastolic": self.diastolic, "pulse": self.pulse, "notes": self.notes}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> BloodPressure:
+        return cls(parse_date(d["date"]), d["time"], d["systolic"], d["diastolic"], d.get("pulse"),
+                   d.get("notes") or "", d["id"])
+
+
+@dataclass
+class GlucoseReading(_Reading):
+    date: date
+    time: str
+    mg_dl: int
+    context: str = "Other"  # one of GLUCOSE_CONTEXTS
+    notes: str = ""
+    id: str = field(default_factory=_new_id)
+
+    def __post_init__(self) -> None:
+        self.time = parse_time(self.time)
+        self.mg_dl = parse_whole(self.mg_dl, "glucose level", 10, 1000)
+        context = next((c for c in GLUCOSE_CONTEXTS if c.lower() == str(self.context).strip().lower()), None)
+        if context is None:
+            raise ValueError(f"When it was taken must be one of: {', '.join(GLUCOSE_CONTEXTS)}")
+        self.context = context
+        self.notes = self.notes.strip()
+
+    def to_dict(self) -> dict:
+        return {"id": self.id, "date": self.date.isoformat(), "time": self.time, "mg_dl": self.mg_dl,
+                "context": self.context, "notes": self.notes}
+
+    @classmethod
+    def from_dict(cls, d: dict) -> GlucoseReading:
+        return cls(parse_date(d["date"]), d["time"], d["mg_dl"], d.get("context") or "Other",
+                   d.get("notes") or "", d["id"])
 
 
 @dataclass
@@ -237,6 +358,9 @@ class DaySummary:
     water_goal: int
     doses_taken: int
     doses_due: int
+    blood_pressure: BloodPressure | None = None  # the day's last reading
+    glucose: GlucoseReading | None = None  # the day's last reading
+    glucose_target: tuple[int, int] = DEFAULT_GLUCOSE_TARGET
 
 
 def _taken_key(medication_id: str, day: date, time: str) -> tuple[str, str, str]:
@@ -252,6 +376,9 @@ class HealthData:
     medications: list[Medication]
     taken: dict[tuple[str, str, str], datetime]  # (medication id, date, time) -> when it was ticked
     water_goal: int = DEFAULT_WATER_GOAL
+    blood_pressure: list[BloodPressure] = field(default_factory=list)  # sorted by date and time
+    glucose: list[GlucoseReading] = field(default_factory=list)  # sorted by date and time
+    glucose_target: tuple[int, int] = DEFAULT_GLUCOSE_TARGET  # (low, high) in mg/dL
 
     def weight_on(self, day: date) -> WeightEntry | None:
         return next((w for w in self.weights if w.date == day), None)
@@ -275,6 +402,12 @@ class HealthData:
             counts[entry.date] = counts.get(entry.date, 0) + 1
         return [(d, counts.get(d, 0)) for d in (last - timedelta(days=i) for i in range(days))]
 
+    def blood_pressure_on(self, day: date) -> list[BloodPressure]:
+        return [r for r in self.blood_pressure if r.date == day]
+
+    def glucose_on(self, day: date) -> list[GlucoseReading]:
+        return [r for r in self.glucose if r.date == day]
+
     def doses_on(self, day: date) -> list[Dose]:
         doses = [
             Dose(med, day, time, self.taken.get(_taken_key(med.id, day, time)))
@@ -285,6 +418,7 @@ class HealthData:
     def summary(self, day: date) -> DaySummary:
         entry, before = self.weight_on(day), self.weight_before(day)
         doses = self.doses_on(day)
+        pressure, glucose = self.blood_pressure_on(day), self.glucose_on(day)
         return DaySummary(
             weight=entry.kg if entry else None,
             weight_change=entry.kg - before.kg if entry and before else None,
@@ -292,6 +426,9 @@ class HealthData:
             water_goal=self.water_goal,
             doses_taken=sum(d.taken for d in doses),
             doses_due=len(doses),
+            blood_pressure=pressure[-1] if pressure else None,
+            glucose=glucose[-1] if glucose else None,
+            glucose_target=self.glucose_target,
         )
 
 
@@ -357,7 +494,29 @@ class HealthStore:
                 for t in doc.get("taken", [])
             },
             water_goal=int(doc.get("settings", {}).get("water_goal", DEFAULT_WATER_GOAL)),
+            blood_pressure=sorted((BloodPressure.from_dict(r) for r in doc.get("blood_pressure", [])),
+                                  key=lambda r: (r.date, r.time)),
+            glucose=sorted((GlucoseReading.from_dict(r) for r in doc.get("glucose", [])),
+                           key=lambda r: (r.date, r.time)),
+            glucose_target=tuple(doc.get("settings", {}).get("glucose_target", DEFAULT_GLUCOSE_TARGET)),
         )
+
+    # --- records kept in a list (water, blood pressure, glucose) ---
+
+    def _append(self, section: str, record) -> None:
+        doc = self._read()
+        doc.setdefault(section, []).append(record.to_dict())
+        self._write(doc)
+
+    def _remove(self, section: str, record_id: str) -> bool:
+        doc = self._read()
+        records = doc.get(section, [])
+        kept = [r for r in records if r["id"] != record_id]
+        if len(kept) == len(records):
+            return False
+        doc[section] = kept
+        self._write(doc)
+        return True
 
     # --- weight ---
 
@@ -386,20 +545,11 @@ class HealthStore:
     def add_water(self, day: date, time: str) -> WaterEntry:
         check_not_future(day, "log water")
         entry = WaterEntry(day, parse_time(time))
-        doc = self._read()
-        doc.setdefault("water", []).append(entry.to_dict())
-        self._write(doc)
+        self._append("water", entry)
         return entry
 
     def delete_water(self, entry_id: str) -> bool:
-        doc = self._read()
-        water = doc.get("water", [])
-        kept = [w for w in water if w["id"] != entry_id]
-        if len(kept) == len(water):
-            return False
-        doc["water"] = kept
-        self._write(doc)
-        return True
+        return self._remove("water", entry_id)
 
     def set_water_goal(self, times: int) -> None:
         times = int(times)
@@ -407,6 +557,36 @@ class HealthStore:
             raise ValueError(f"The daily goal must be between 1 and {MAX_WATER_GOAL} times")
         doc = self._read()
         doc.setdefault("settings", {})["water_goal"] = times
+        self._write(doc)
+
+    # --- blood pressure ---
+
+    def add_blood_pressure(self, reading: BloodPressure) -> BloodPressure:
+        check_not_future(reading.date, "enter a blood pressure reading")
+        self._append("blood_pressure", reading)
+        return reading
+
+    def delete_blood_pressure(self, reading_id: str) -> bool:
+        return self._remove("blood_pressure", reading_id)
+
+    # --- glucose ---
+
+    def add_glucose(self, reading: GlucoseReading) -> GlucoseReading:
+        check_not_future(reading.date, "enter a glucose reading")
+        self._append("glucose", reading)
+        return reading
+
+    def delete_glucose(self, reading_id: str) -> bool:
+        return self._remove("glucose", reading_id)
+
+    def set_glucose_target(self, low: int, high: int) -> None:
+        lowest, highest = GLUCOSE_TARGET_LIMITS
+        low = parse_whole(low, "lower end of the target range", lowest, highest)
+        high = parse_whole(high, "upper end of the target range", lowest, highest)
+        if low >= high:
+            raise ValueError("The lower end of the target range must be below the upper end")
+        doc = self._read()
+        doc.setdefault("settings", {})["glucose_target"] = [low, high]
         self._write(doc)
 
     # --- medications ---
